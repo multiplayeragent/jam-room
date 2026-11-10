@@ -1,0 +1,22 @@
+{
+  "name": "Jam Room",
+  "genre": "word",
+  "dim": "2D",
+  "mode": "Party",
+  "players": "1–8",
+  "hook": "Grab an instrument. Make a beat together.",
+  "how": "One loop plays for everyone at the same time. You play one of four instruments (drums, bass, chords or lead): tap squares to add notes and hear them land on the next beat. Cheer the parts you like; every song gets a fresh key and tempo.",
+  "controls": "Click or tap squares to add or remove notes (drag to paint a run); tap another instrument to switch, ♥ to cheer",
+  "uses": [
+    ["Host-run rules", "One player's browser keeps the band's patterns and seats and applies every note; if it leaves, the next player takes over."],
+    ["Live sync", "Everyone hears the same loop on a shared clock and sees every note as it's added."],
+    ["Bots", "Bots play the instruments nobody has taken, changing their parts a little every few seconds."],
+    ["Leaderboard", "The most cheers each player got in one song."],
+    ["Live ops", "Set the tempo or the song length for every room without touching code."]
+  ],
+  "ideas": [
+    "Add a fifth instrument: a cowbell row",
+    "Let players pick the scale before a song",
+    "Make the loop 32 steps long"
+  ]
+}

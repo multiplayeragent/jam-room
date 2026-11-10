@@ -1,0 +1,768 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Jam Room</title>
+<style>
+  :root { --bg: #0d0a1f; --ink: #f4f0ff; --dim: #a59fc9; --gold: #ffd23f; --pink: #ff5c8a; }
+  html, body { margin: 0; height: 100%; overflow: hidden; overscroll-behavior: none; background: var(--bg); }
+  body { color: var(--ink); font: 15px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; user-select: none; -webkit-user-select: none; }
+  [hidden] { display: none !important; }
+  #app { height: 100%; height: 100dvh; box-sizing: border-box; display: flex; flex-direction: column; gap: 6px; max-width: 1180px; margin: 0 auto;
+         padding: max(8px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left)); }
+  header { display: flex; align-items: center; gap: 12px; min-height: 40px; }
+  header h1 { margin: 0; font-size: 21px; letter-spacing: .02em; white-space: nowrap; }
+  header h1 b { color: var(--pink); }
+  #song { color: var(--dim); font-weight: 700; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  #left { margin-left: auto; font: 800 16px ui-monospace, Menlo, Consolas, monospace; padding: 6px 10px; border-radius: 10px; background: #ffffff10; white-space: nowrap; }
+  #stage { flex: 1; min-height: 0; width: 100%; display: block; touch-action: none; }
+  #hint { text-align: center; font-weight: 700; font-size: 14px; color: var(--gold); min-height: 19px; }
+  #net { text-align: center; font-size: 12px; color: var(--dim); min-height: 16px; }
+  #over { position: fixed; inset: 0; display: grid; place-items: center; background: #0a0818c0; }
+  .card { box-sizing: border-box; width: min(380px, calc(100vw - 32px)); max-height: 88vh; overflow: auto; padding: 18px 20px; border-radius: 18px; background: #1a1436; border: 1px solid #ffffff2a; text-align: center; box-shadow: 0 0 50px #b07cff44; }
+  .card h2 { margin: 0 0 2px; font-size: 25px; }
+  .card .sub { margin: 0 0 10px; color: var(--dim); font-size: 13px; }
+  .card h3 { margin: 14px 0 4px; font-size: 13px; color: var(--gold); text-align: left; text-transform: uppercase; letter-spacing: .06em; }
+  .card ol { margin: 0; padding-left: 24px; font-size: 14px; text-align: left; }
+  .card li { padding: 2px 0; } .card li span { float: right; font-variant-numeric: tabular-nums; font-weight: 800; }
+  .card li small { display: block; color: var(--dim); font-size: 12px; }
+  .card li.me { color: var(--gold); }
+  .card p { margin: 10px 0 0; font-size: 13px; opacity: .8; }
+  button.go { width: 100%; min-height: 48px; margin-top: 14px; border: 0; border-radius: 12px; background: var(--pink); color: #fff; font: 800 17px system-ui, sans-serif; cursor: pointer; }
+  @media (max-width: 560px) { header h1 { font-size: 18px; } #song { font-size: 12px; } #left { font-size: 14px; } }
+</style>
+<script src="https://cdn.multiplayeragent.com/sdk/mp.global.js"></script>
+</head>
+<body>
+<div id="app">
+  <header><h1>Jam <b>Room</b></h1><span id="song"></span><span id="left"></span></header>
+  <canvas id="stage"></canvas>
+  <div id="hint"></div>
+  <div id="net">Connecting…</div>
+</div>
+<div id="over" hidden><div class="card">
+  <h2 id="title"></h2><div class="sub" id="sub"></div><ol id="results"></ol>
+  <h3>Most cheered</h3><ol id="board"><li>Loading…</li></ol>
+  <button class="go" id="again">Next song</button><p id="next"></p>
+</div></div>
+<script>
+/* ═══ JAM ROOM · a Multiplayer Agent starter ══════════════════════════════════════════
+ * Make music together. One 16-step loop, four instruments: drums, bass, chords and lead.
+ * You play one of them: tap squares to add notes, and everyone hears the same loop in sync.
+ * Party, 1–8 players; bots noodle on the instruments nobody is playing.
+ *
+ * WHERE THINGS ARE (search for the "── " headers):
+ *   CONFIG ........ song length, tempo range, bots, and the four INSTRUMENTS
+ *   CONNECTION .... MP_CONNECT, joining, the offline room, who is host
+ *   MUSIC ......... a song from its seed: key, chords, which note each row plays
+ *   BAND (HOST) ... the phases (count, jam, done), who plays what, applying everyone's notes
+ *                   and cheers, the bots. Only the host writes these.
+ *   MY JAM ........ toggling notes on your instrument, switching instrument, cheering
+ *   SOUND ......... WebAudio synths, and the scheduler that plays the loop on the shared clock
+ *   DRAW .......... the lanes, the playhead, notes lighting up, hearts
+ *   HUD & RESULTS . header, hint line, the song's round-up card, leaderboard
+ *   INPUT ......... tap or click squares; tap another instrument to play it; ♥ to cheer
+ *
+ * HOW THE MULTIPLAYER WORKS (a relay room: no server code):
+ *   - The song lives in ONE shared field, `song`: {id, v, phase, seed, bpm, t0, endsAt, res}.
+ *     Only the HOST writes it; `v` goes up on every write. t0 is a timestamp: step k of the
+ *     loop plays at t0 + k × step length on every screen, so everyone hears the same beat.
+ *     The key, the chords and the starting grooves come from mulberry32(seed).
+ *   - The band lives in ONE shared field, `band`: {r, v, p, s, h, n}: the four patterns
+ *     (16 letters each, one per step, a letter = which of the 5 rows are on), who sits at
+ *     each instrument, and everyone's cheers (h) and notes placed (n). Only the host writes it.
+ *   - The HOST is the lowest sessionId among live players (heartbeat seen in the last 3s),
+ *     worked out every frame. It seats new players, runs the clock, plays the bots on empty
+ *     instruments, and applies the intents. A new host adopts song and band from state.
+ *   - Everyone else sends intents: "toggle" {i, s, r, on} (a note on your instrument),
+ *     "seat" {i} (play another instrument) and "cheer" {i}. Your note shows at once until
+ *     the band comes back.
+ *   - Each player writes its OWN entity: `hb` (heartbeat) once a second, `rdy` (Next song)
+ *     and `n`/`c` (name, color).
+ *   - Live ops: mp.live.config.bpm (a fixed tempo) and .songSecs change the next song.
+ *   - ?attract plays offline: bots plus an autopilot on your instrument (the preview video).
+ *   - Leaderboard "cheers": the most cheers each player got in one song.
+ */
+
+// ── CONFIG ──────────────────────────────────────────────────────────────────────────
+const CONFIG = {
+  songSecs: 150,          // how long a song lasts before the round-up (live ops: config.songSecs)
+  bpm: [92, 124],         // each song picks a tempo in this range (live ops: config.bpm sets one)
+  countBeats: 4,          // count-in beats before a song starts
+  resultsMs: 12000,       // ms on the round-up card before the next song
+  perSeat: 2,             // players who can share one instrument
+  botEveryMs: [2200, 4800], // a bot's pause between changes to its pattern
+  botCheerMs: [6000, 14000],// how often a bot cheers someone
+  cheerGapMs: 500,        // fastest you can cheer
+  flushMs: 90,            // the host writes the band at most this often
+  aheadMs: 160,           // sound is queued this far ahead of the beat
+  volume: 0.5,
+  board: "cheers",        // leaderboard: most cheers in one song
+};
+// The four instruments. Rows are listed top to bottom; min/max = how busy a bot keeps it.
+const INSTRUMENTS = [
+  { name: "Drums", color: "#ff5c8a", bot: "Boom Bot", rows: ["Hat", "Clap", "Snare", "Tom", "Kick"], min: 9, max: 17 },
+  { name: "Bass", color: "#3dd6ff", bot: "Low Rider", rows: ["8va", "5th", "3rd", "Root", "Low"], min: 4, max: 9, mono: true },
+  { name: "Chords", color: "#b07cff", bot: "Padsworth", rows: ["Top", "High", "5th", "3rd", "Root"], min: 4, max: 13 },
+  { name: "Lead", color: "#ffd23f", bot: "Synthia", rows: ["", "", "", "", ""], min: 4, max: 10, mono: true },
+];
+const COLORS = ["#ff6fb5", "#3fa7ff", "#ffb347", "#4ee08a", "#c77dff", "#3fe0c5", "#ff6b6b", "#e6e65c"];
+const NAME_A = ["Funky", "Groovy", "Cosmic", "Smooth", "Jazzy", "Electric"], NAME_B = ["Beat", "Keys", "Bass", "Vibes", "Drummer", "Synth"];
+
+// ── CONNECTION ──────────────────────────────────────────────────────────────────────
+// The builder fills these in for this game. Downloaded from GitHub? Put your own pk_ key here.
+const MP_CONNECT = {
+  key: 'pk_REPLACE_ME',
+  room: 'jam-room',
+  endpoint: 'wss://live.multiplayeragent.com',
+  apiUrl: 'https://api.multiplayeragent.com',
+};
+const ATTRACT = new URLSearchParams(location.search).has("attract");
+
+/** Same shape as the SDK client, kept in this tab: offline play and ?attract. */
+function localRoom() {
+  const id = "local", state = { entities: { players: { [id]: {} } }, shared: {} }, subs = [];
+  let queued = false;
+  const emit = () => { if (!queued) { queued = true; queueMicrotask(() => { queued = false; subs.forEach((f) => f(state)); }); } };
+  const put = (o, k, v) => { if (typeof k === "object") Object.assign(o, k); else o[k] = v; emit(); };
+  return {
+    sessionId: id, state, offline: true, live: { config: {}, active: [] },
+    me: { set: (k, v) => put(state.entities.players[id], k, v) },
+    setShared: (k, v) => put(state.shared, k, v),
+    onState: (f) => { subs.push(f); f(state); }, onJoin() {}, onLeave() {}, on() {}, send() {}, onLive() {},
+    onDisconnect() {}, onReconnect() {}, leave: async () => {},
+  };
+}
+async function connect() {
+  if (ATTRACT || typeof MP === "undefined") return localRoom();
+  try {
+    const mp = await Promise.race([MP.join({ ...MP_CONNECT }), new Promise((_, no) => setTimeout(() => no(new Error("timed out")), 10000))]);
+    window.mp = mp; // the builder calls window.mp.leave() when the page closes
+    return mp;
+  } catch (e) {
+    console.warn("Playing offline:", e && e.message);
+    return localRoom();
+  }
+}
+const parse = (v, fb) => { if (typeof v !== "string") return fb; try { return JSON.parse(v); } catch { return fb; } };
+const memo = new Map();
+/** A JSON field, parsed once per change (read-only: never mutate what this returns). */
+function cached(key, raw, fb) { const m = memo.get(key); if (m && m.raw === raw) return m.v; const v = parse(raw, fb); memo.set(key, { raw, v }); return v; }
+let net = null, S = { entities: { players: {} }, shared: {} }, netDown = false;
+const seenHb = new Map(); // sessionId -> { hb, at } on OUR clock
+/** Players whose heartbeat moved in the last 3s (plus us), sorted by sessionId. */
+function livePlayers() {
+  const now = performance.now(), out = [];
+  for (const [id, p] of Object.entries(S.entities.players || {})) {
+    const s = seenHb.get(id);
+    if (!s || s.hb !== p.hb) seenHb.set(id, { hb: p.hb, at: now });
+    if (id === net.sessionId || now - seenHb.get(id).at < 3000) out.push(id);
+  }
+  return out.sort();
+}
+const isHost = () => livePlayers()[0] === net.sessionId;
+const liveConfig = () => (net && net.live && net.live.config) || {};
+const nameOf = (id) => (id === net.sessionId ? myName : String((S.entities.players[id] || {}).n || "Player"));
+const colorOf = (id) => (id === net.sessionId ? myColor : (S.entities.players[id] || {}).c || "#ccc");
+
+// ── MUSIC ───────────────────────────────────────────────────────────────────────────
+function mulberry32(a) { return () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+// Chords as notes above the key's root. Each song loops a 4-chord progression, one chord per bar.
+const MINOR = { prog: [[0, 8, 3, 10], [0, 5, 8, 7], [0, 10, 8, 10], [0, 3, 10, 5], [0, 8, 5, 7]], chord: { 0: [0, 3, 7], 3: [3, 7, 10], 5: [5, 8, 12], 7: [7, 11, 14], 8: [8, 12, 15], 10: [10, 14, 17] }, lead: [15, 12, 10, 7, 3] };
+const MAJOR = { prog: [[0, 7, 9, 5], [0, 5, 7, 5], [0, 9, 5, 7], [0, 4, 5, 7], [0, 5, 9, 7]], chord: { 0: [0, 4, 7], 2: [2, 5, 9], 4: [4, 7, 11], 5: [5, 9, 12], 7: [7, 11, 14], 9: [9, 12, 16] }, lead: [16, 12, 9, 7, 4] };
+const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+const songMemo = new Map();
+/** Everything about a song that comes from its seed: name, key, chords, step length. */
+function songOf(s) {
+  const key = s.seed + ":" + s.bpm;
+  if (songMemo.has(key)) return songMemo.get(key);
+  const rnd = mulberry32(s.seed), pick = (a) => a[Math.floor(rnd() * a.length)];
+  const minor = rnd() < 0.6, scale = minor ? MINOR : MAJOR, root = 40 + Math.floor(rnd() * 8); // root: a bass note, E2 to B2
+  const name = pick(["Neon", "Midnight", "Velvet", "Cosmic", "Sunset", "Turbo", "Crystal", "Lazy", "Golden", "Rainy"]) + " " + pick(["Groove", "Pulse", "Drift", "Echo", "Fever", "Waves", "Strut", "Bounce", "Dreams", "Shuffle"]);
+  const song = { name, root, minor, prog: pick(scale.prog), scale, bpm: s.bpm, stepMs: 60000 / s.bpm / 4, keyName: NOTE_NAMES[root % 12] + (minor ? " minor" : " major") };
+  songMemo.set(key, song);
+  return song;
+}
+/** The MIDI note a row plays in a given bar (bass and chords follow the bar's chord, lead the key). */
+function noteFor(i, row, song, bar) {
+  const t = song.scale.chord[song.prog[bar % 4]], R = song.root;
+  if (i === 1) return R + [t[0] + 12, t[2], t[1], t[0], t[2] - 12][row];
+  if (i === 2) return R + 12 + [t[1] + 12, t[0] + 12, t[2], t[1], t[0]][row];
+  return R + 24 + song.scale.lead[row];
+}
+// Patterns: 16 letters, one per step; the letter's place in ALPH is a 5-bit mask of the rows that are on.
+const ALPH = "abcdefghijklmnopqrstuvwxyzABCDEF", EMPTY = "a".repeat(16);
+const cleanPat = (p) => (typeof p === "string" && p.length === 16 && /^[a-zA-F]+$/.test(p) ? p : EMPTY);
+const bitsOf = (p, step) => Math.max(0, ALPH.indexOf(p[step]));
+const withBits = (p, step, bits) => p.slice(0, step) + ALPH[bits] + p.slice(step + 1);
+const countNotes = (p) => [...p].reduce((n, ch) => { let b = ALPH.indexOf(ch); for (; b; b >>= 1) n += b & 1; return n; }, 0);
+/** The grooves a song starts with, from its seed, so the room sounds good from the first beat. */
+function starterPatterns(seed) {
+  const rnd = mulberry32(seed ^ 0x51ed), pick = (a) => a[Math.floor(rnd() * a.length)], P = [0, 1, 2, 3].map(() => Array(16).fill(0));
+  for (let st = 0; st < 16; st += 2) P[0][st] |= 1;            // hats on the 8ths
+  for (const st of [0, 8, pick([6, 10, 11, 14])]) P[0][st] |= 16; // kicks
+  for (const st of [4, 12]) P[0][st] |= 4;                     // snares
+  P[1][0] = 8; P[1][pick([6, 7])] = pick([2, 8]); P[1][10] = pick([1, 8]); if (rnd() < 0.6) P[1][14] = 2;
+  P[2][0] = 28; P[2][pick([6, 10])] = pick([28, 14]);
+  let row = pick([1, 2, 3]);
+  for (const st of [2, pick([5, 6]), 9, pick([12, 13])]) { P[3][st] = 1 << row; row = Math.max(0, Math.min(4, row + pick([-1, 1, 1, -2]))); }
+  return P.map((steps) => steps.map((b) => ALPH[b]).join(""));
+}
+
+// ── BAND (HOST) ─────────────────────────────────────────────────────────────────────
+const host = { last: null, band: null, wasHost: false, dirty: false, lastFlush: 0, botNext: [0, 0, 0, 0], botCheerAt: 0, cheers: [], lastCheer: new Map() };
+/** The song as state has it, or the host's own newer write that hasn't come back yet. `v` only goes up. */
+function song() {
+  const s = cached("song", S.shared.song, null);
+  return host.last && isHost() && (!s || host.last.v > s.v) ? host.last : s;
+}
+function writeSong(s) { s = { ...s, v: (song()?.v ?? 0) + 1 }; host.last = s; net.setShared("song", JSON.stringify(s)); return s; }
+/** The band: the host's own live copy, everyone else's from state. */
+function band() { return isHost() && host.band ? host.band : cached("band", S.shared.band, null); }
+function newSong(id) {
+  const lc = liveConfig(), [lo, hi] = CONFIG.bpm;
+  const bpm = Math.max(60, Math.min(180, Math.round(+lc.bpm || lo + Math.round((Math.random() * (hi - lo)) / 4) * 4)));
+  const secs = Math.max(30, Math.min(900, +lc.songSecs || CONFIG.songSecs)), bar = 16 * (60000 / bpm / 4);
+  const t0 = Date.now() + CONFIG.countBeats * (60000 / bpm) + 400;
+  return { id, phase: "count", seed: (Math.random() * 1e9) | 0, bpm, t0, endsAt: t0 + Math.max(4, Math.round((secs * 1000) / bar)) * bar, res: [] };
+}
+/** A fresh band for a song: its starter grooves, and the players keep their instruments. */
+function freshBand(s, prev) {
+  return { r: s.id, v: (prev?.v ?? 0) + 1, p: starterPatterns(s.seed), s: prev && Array.isArray(prev.s) ? prev.s.map((ids) => [...ids]) : [[], [], [], []], h: {}, n: {} };
+}
+/** Become host: take over the band exactly as state has it. */
+function adopt() {
+  host.wasHost = true; host.cheers = [];
+  const s = song(), b = parse(S.shared.band, null);
+  host.band = s && b && b.r === s.id && Array.isArray(b.p) && Array.isArray(b.s) ? { ...b, p: b.p.map(cleanPat), s: b.s.map((x) => (Array.isArray(x) ? x : [])), h: b.h || {}, n: b.n || {} } : null;
+}
+const seatOf = (b, id) => (b ? b.s.findIndex((ids) => ids.includes(id)) : -1);
+/** Seat every live player (an empty instrument first, then one with room), and free the seats of those who left. */
+function seatPlayers() {
+  const b = host.band, live = livePlayers();
+  for (let i = 0; i < 4; i++) { const kept = b.s[i].filter((id) => live.includes(id)); if (kept.length !== b.s[i].length) { b.s[i] = kept; host.dirty = true; } }
+  for (const id of live) {
+    if (seatOf(b, id) >= 0) continue;
+    let i = b.s.findIndex((ids) => !ids.length);
+    if (i < 0) { const n = Math.min(...b.s.map((x) => x.length)); i = n < CONFIG.perSeat ? b.s.findIndex((x) => x.length === n) : -1; }
+    if (i >= 0) { b.s[i].push(id); host.dirty = true; }
+  }
+}
+/** A "toggle" intent: the sender plays instrument i, so it may set that step's row on or off. */
+function applyToggle(from, m) {
+  const b = host.band, { i, s, r } = m || {};
+  if (!b || ![i, s, r].every(Number.isInteger) || i < 0 || i > 3 || s < 0 || s > 15 || r < 0 || r > 4 || !b.s[i].includes(from)) return;
+  setNote(i, s, r, !!m.on, from);
+  if (m.on && Math.random() < 0.15) host.cheers.push({ i, at: performance.now() + 900 + Math.random() * 2000 }); // a bot likes it
+}
+function setNote(i, step, row, on, who) {
+  const b = host.band, bits = bitsOf(b.p[i], step);
+  const want = on ? (INSTRUMENTS[i].mono ? 1 << row : bits | (1 << row)) : bits & ~(1 << row);
+  if (want === bits) return;
+  b.p[i] = withBits(b.p[i], step, want);
+  if (on) b.n[who] = (b.n[who] || 0) + 1;
+  host.dirty = true;
+}
+/** A "seat" intent: move to instrument i if it has room. */
+function applySeat(from, m) {
+  const b = host.band, i = m && m.i;
+  if (!b || !Number.isInteger(i) || i < 0 || i > 3 || b.s[i].includes(from) || b.s[i].length >= CONFIG.perSeat || !livePlayers().includes(from)) return;
+  for (const ids of b.s) { const k = ids.indexOf(from); if (k >= 0) ids.splice(k, 1); }
+  b.s[i].push(from); host.dirty = true;
+}
+/** A "cheer" intent: a heart for everyone playing instrument i (a bot if nobody is). */
+function applyCheer(from, m) {
+  const b = host.band, i = m && m.i, now = performance.now();
+  if (!b || !Number.isInteger(i) || i < 0 || i > 3 || b.s[i].includes(from) || now - (host.lastCheer.get(from) || -1e9) < CONFIG.cheerGapMs - 150) return;
+  host.lastCheer.set(from, now);
+  for (const id of b.s[i].length ? b.s[i] : ["bot" + i]) b.h[id] = (b.h[id] || 0) + 1;
+  host.dirty = true;
+}
+// Bots: on every instrument nobody plays, a gentle change every few seconds that keeps the groove musical.
+const W = (pairs) => { const total = pairs.reduce((s, p) => s + p[1], 0); let r = Math.random() * total; for (const [v, w] of pairs) if ((r -= w) <= 0) return v; return pairs[0][0]; };
+/** A note that suits instrument i: [step, row]. */
+function suggest(i, p) {
+  if (i === 0) {
+    const row = W([[0, 3], [1, 1], [2, 1.2], [3, 1], [4, 2]]);
+    const steps = [[1, 3, 5, 7, 9, 11, 13, 15, 0, 4, 8, 12], [4, 12, 14, 15], [4, 12, 7, 15, 10], [12, 13, 14, 15, 6], [0, 8, 3, 6, 10, 11, 14]][row];
+    return [steps[Math.floor(Math.random() * steps.length)], row];
+  }
+  if (i === 1) return [W([[0, 3], [3, 2], [6, 2], [8, 2], [10, 2], [11, 1], [14, 2], [2, 1], [12, 1]]), W([[0, 1], [1, 1.5], [2, 1], [3, 3], [4, 1]])];
+  if (i === 2) return [W([[0, 3], [4, 1], [6, 2], [8, 2], [10, 2], [12, 1], [14, 1], [3, 1], [11, 1]]), W([[2, 2], [3, 2], [4, 3], [1, 1.5], [0, 1]])];
+  const step = Math.floor(Math.random() * 16); // lead: near the note before it
+  let prev = 2;
+  for (let k = 1; k < 16; k++) { const bits = bitsOf(p, (step - k + 16) % 16); if (bits) { prev = Math.round(Math.log2(bits & -bits)); break; } }
+  return [step, Math.max(0, Math.min(4, prev + W([[-2, 1], [-1, 3], [1, 3], [2, 1], [0, 0.5]])))];
+}
+/** One bot change on instrument i: add a fitting note (chords get a whole stab), or take one away. */
+function botMove(i, as) {
+  const b = host.band, p = b.p[i], n = countNotes(p), inst = INSTRUMENTS[i];
+  if (n < inst.min || (n < inst.max && Math.random() < 0.58)) {
+    const [step, row] = suggest(i, p);
+    setNote(i, step, row, true, as);
+    if (i === 2 && Math.random() < 0.7) for (const r of row >= 2 ? [2, 3, 4] : [row, row + 1, row + 2]) setNote(i, step, Math.min(4, r), true, as);
+  } else {
+    const on = [];
+    for (let st = 0; st < 16; st++) for (let r = 0; r < 5; r++) if ((bitsOf(p, st) >> r) & 1 && !(i === 0 && r === 4 && st === 0)) on.push([st, r]);
+    if (on.length) { const [st, r] = on[Math.floor(Math.random() * on.length)]; setNote(i, st, r, false, as); }
+  }
+}
+function driveBots(now) {
+  const b = host.band;
+  for (let i = 0; i < 4; i++) {
+    if (b.s[i].length) continue;
+    if (!host.botNext[i]) host.botNext[i] = now + 800 + Math.random() * 2000;
+    if (now >= host.botNext[i]) { botMove(i, "bot" + i); const [lo, hi] = CONFIG.botEveryMs; host.botNext[i] = now + lo + Math.random() * (hi - lo); }
+  }
+  // bots cheer: now and then on their own, and a moment after someone adds a note they like
+  const bots = [0, 1, 2, 3].filter((i) => !b.s[i].length);
+  if (bots.length && now >= host.botCheerAt) { const [lo, hi] = CONFIG.botCheerMs; host.botCheerAt = now + lo + Math.random() * (hi - lo); const i = W([0, 1, 2, 3].map((k) => [k, b.s[k].length ? 3 : 1])); host.cheers.push({ i, at: now }); }
+  host.cheers = host.cheers.filter((c) => { if (now < c.at) return true; const from = bots.find((k) => k !== c.i); if (from !== undefined) applyCheer("bot" + from, { i: c.i }); return false; });
+}
+/** The round-up: who played what, notes placed, cheers. */
+function roundUp(s) {
+  const b = host.band, rows = [];
+  b.s.forEach((ids, i) => { for (const id of ids.length ? ids : ["bot" + i]) rows.push([id, (ids.length ? nameOf(id) : INSTRUMENTS[i].bot).slice(0, 14), ids.length ? colorOf(id) : INSTRUMENTS[i].color, i, b.n[id] || 0, b.h[id] || 0]); });
+  rows.sort((x, y) => y[5] - x[5] || y[4] - x[4]);
+  return { ...s, phase: "done", endsAt: Date.now() + CONFIG.resultsMs, res: rows.slice(0, 10) };
+}
+function hostTick(now) {
+  if (!host.wasHost) adopt();
+  let s = song();
+  const t = Date.now();
+  if (!s) s = writeSong(newSong(1));
+  if (!host.band || host.band.r !== s.id) { host.band = freshBand(s, host.band || parse(S.shared.band, null)); host.dirty = true; }
+  seatPlayers();
+  if (s.phase === "count") { if (t >= s.t0) s = writeSong({ ...s, phase: "jam" }); }
+  else if (s.phase === "jam") { driveBots(now); if (t >= s.endsAt) s = writeSong(roundUp(s)); }
+  else if (s.phase === "done") {
+    const people = livePlayers(), ready = people.length && people.every((id) => (id === net.sessionId ? me.ready : (S.entities.players[id] || {}).rdy) === s.id);
+    if (t > s.endsAt || ready) { s = writeSong(newSong(s.id + 1)); host.band = freshBand(s, host.band); host.dirty = true; host.lastFlush = 0; }
+  }
+  if (host.dirty && now - host.lastFlush >= CONFIG.flushMs) {
+    host.dirty = false; host.lastFlush = now;
+    const st = cached("band", S.shared.band, null);
+    host.band.v = Math.max(host.band.v || 0, (st && st.v) || 0) + 1;
+    net.setShared("band", JSON.stringify(host.band));
+  }
+}
+
+// ── MY JAM ──────────────────────────────────────────────────────────────────────────
+let myName = "";
+try { myName = localStorage.getItem("mpa-name") || ""; } catch {}
+myName = myName || NAME_A[Math.floor(Math.random() * NAME_A.length)] + " " + NAME_B[Math.floor(Math.random() * NAME_B.length)];
+let myColor = COLORS[0]; // picked on join: the first color nobody in the room has
+const me = { songId: -1, ready: 0, submitted: -1, seatAt: 0, seat: -1, lastCheer: 0, autoAt: 0 };
+const pending = new Map(); // "i:step" -> { bits, until }: my change, shown until the band comes back
+/** What step `step` of instrument i plays right now: the band, with my unconfirmed changes on top. */
+function viewBits(b, i, step) {
+  const p = pending.get(i + ":" + step);
+  if (p) { if (bitsOf(b.p[i], step) === p.bits || performance.now() > p.until) pending.delete(i + ":" + step); else return p.bits; }
+  return bitsOf(cleanPat(b.p[i]), step);
+}
+const mySeat = () => seatOf(band(), net.sessionId);
+/** Tap a square on my instrument: switch that note on or off. */
+function toggle(step, row) {
+  const b = band(), i = mySeat(), s = song();
+  if (!b || i < 0 || !s || s.phase === "done" || b.r !== s.id) return;
+  const bits = viewBits(b, i, step), on = !((bits >> row) & 1);
+  const want = on ? (INSTRUMENTS[i].mono ? 1 << row : bits | (1 << row)) : bits & ~(1 << row);
+  pending.set(i + ":" + step, { bits: want, until: performance.now() + 2500 });
+  if (on) previewNote(i, row, s);
+  const msg = { i, s: step, r: row, on };
+  if (isHost()) applyToggle(net.sessionId, msg); else net.send("toggle", msg);
+}
+function clearMine() {
+  const b = band(), i = mySeat();
+  if (!b || i < 0) return;
+  for (let st = 0; st < 16; st++) for (let r = 0; r < 5; r++) if ((viewBits(b, i, st) >> r) & 1) toggle(st, r);
+}
+function takeSeat(i) {
+  const b = band();
+  if (!b || b.s[i].includes(net.sessionId)) return;
+  if (b.s[i].length >= CONFIG.perSeat) { flashHint(`${INSTRUMENTS[i].name} is full`); return; }
+  if (isHost()) applySeat(net.sessionId, { i }); else net.send("seat", { i });
+  flashHint(`Switching to ${INSTRUMENTS[i].name}…`);
+}
+function cheer(i) {
+  const now = performance.now(), b = band();
+  if (!b || now - me.lastCheer < CONFIG.cheerGapMs || b.s[i].includes(net.sessionId)) return;
+  me.lastCheer = now; floatHeart(i, true); sfx("cheer");
+  if (isHost()) applyCheer(net.sessionId, { i }); else net.send("cheer", { i });
+}
+/** ?attract: your instrument plays itself, the way a bot would. */
+function autopilot(now) {
+  if (!ATTRACT || now < me.autoAt) return;
+  const b = band(), i = mySeat(); if (!b || i < 0) return;
+  me.autoAt = now + 650 + Math.random() * 500;
+  const p = b.p[i], n = countNotes(p);
+  if (n < INSTRUMENTS[i].max && (n < INSTRUMENTS[i].min || Math.random() < 0.6)) { const [st, r] = suggest(i, p); if (!((viewBits(b, i, st) >> r) & 1)) { toggle(st, r); finger = { i, st, r, at: now }; } }
+  else for (let k = 0; k < 40; k++) { const st = Math.floor(Math.random() * 16), r = Math.floor(Math.random() * 5); if ((viewBits(b, i, st) >> r) & 1) { toggle(st, r); finger = { i, st, r, at: now }; break; } }
+}
+
+// ── SOUND ───────────────────────────────────────────────────────────────────────────
+let audio = null, master = null, echo = null, noise = null;
+const music = { key: "", base: 0, next: 0 }; // base: the AudioContext time of loop time 0
+function unlockAudio() {
+  if (audio || ATTRACT) return;
+  try {
+    audio = new AudioContext();
+    const comp = audio.createDynamicsCompressor(); master = audio.createGain(); master.gain.value = CONFIG.volume; master.connect(comp).connect(audio.destination);
+    echo = audio.createDelay(1); const fb = audio.createGain(); fb.gain.value = 0.32; echo.connect(fb).connect(echo); echo.connect(master); // the lead's echo
+    noise = audio.createBuffer(1, audio.sampleRate, audio.sampleRate);
+    const ch = noise.getChannelData(0); for (let i = 0; i < ch.length; i++) ch[i] = Math.random() * 2 - 1;
+    music.key = ""; // line up with the loop on the next frame
+  } catch { audio = null; }
+}
+const hz = (m) => 440 * Math.pow(2, (m - 69) / 12);
+function voice(type, freq, at, len, vol, filter, out = master) {
+  const o = audio.createOscillator(), g = audio.createGain();
+  o.type = type; o.frequency.setValueAtTime(freq, at);
+  g.gain.setValueAtTime(0.0001, at); g.gain.exponentialRampToValueAtTime(vol, at + 0.008); g.gain.exponentialRampToValueAtTime(0.0001, at + len);
+  if (filter) { const f = audio.createBiquadFilter(); f.type = "lowpass"; f.frequency.value = filter; o.connect(f).connect(g); } else o.connect(g);
+  g.connect(out); o.start(at); o.stop(at + len + 0.05);
+  return o;
+}
+function hiss(at, len, vol, hp) {
+  const src = audio.createBufferSource(), f = audio.createBiquadFilter(), g = audio.createGain();
+  src.buffer = noise; f.type = "highpass"; f.frequency.value = hp;
+  g.gain.setValueAtTime(vol, at); g.gain.exponentialRampToValueAtTime(0.0001, at + len);
+  src.connect(f).connect(g).connect(master); src.start(at, Math.random() * 0.5); src.stop(at + len + 0.02);
+}
+/** One note of one instrument at audio time `at`. */
+function playNote(i, row, at, song, bar) {
+  const step = song.stepMs / 1000;
+  if (i === 0) {
+    if (row === 4) { const o = voice("sine", 150, at, 0.3, 0.9); o.frequency.exponentialRampToValueAtTime(42, at + 0.12); }
+    else if (row === 3) { const o = voice("sine", 210, at, 0.25, 0.45); o.frequency.exponentialRampToValueAtTime(95, at + 0.2); }
+    else if (row === 2) { hiss(at, 0.16, 0.32, 1200); voice("triangle", 190, at, 0.1, 0.25); }
+    else if (row === 1) { for (const d of [0, 0.011, 0.022]) hiss(at + d, d ? 0.13 : 0.02, 0.28, 900); }
+    else hiss(at, 0.045, 0.13, 7000);
+    return;
+  }
+  const m = noteFor(i, row, song, bar);
+  if (i === 1) voice("sawtooth", hz(m), at, step * 1.9, 0.2, 520);
+  else if (i === 2) { voice("sawtooth", hz(m), at, step * 2.6, 0.035, 1800); voice("triangle", hz(m) * 1.003, at, step * 2.6, 0.04); }
+  else { voice("square", hz(m), at, step * 1.6, 0.06, 2600); voice("triangle", hz(m), at, step * 1.6, 0.05, 0, echo); echo.delayTime.value = step * 3; }
+}
+/** Called every frame: queue the steps just ahead on the audio clock, lined up with the song's t0. */
+function scheduleMusic(s, b) {
+  if (!audio || !s || !b || s.phase !== "jam" || b.r !== s.id) return;
+  const sg = songOf(s), t = Date.now() - s.t0;
+  if (music.key !== s.id + ":" + s.seed) {
+    music.key = s.id + ":" + s.seed;
+    music.base = audio.currentTime - t / 1000 - (audio.outputLatency || audio.baseLatency || 0);
+    music.next = Math.max(0, Math.ceil(t / sg.stepMs));
+  }
+  while (music.next * sg.stepMs < t + CONFIG.aheadMs && s.t0 + music.next * sg.stepMs < s.endsAt) {
+    const k = music.next++, at = music.base + (k * sg.stepMs) / 1000, step = k % 16, bar = Math.floor(k / 16);
+    if (at < audio.currentTime - 0.01) continue;
+    for (let i = 0; i < 4; i++) { const bits = viewBits(b, i, step); for (let r = 0; r < 5; r++) if ((bits >> r) & 1) playNote(i, r, Math.max(at, audio.currentTime), sg, bar); }
+  }
+}
+/** The note you just added, right away, so tapping feels like playing. */
+function previewNote(i, row, s) { if (audio && s.phase === "jam") playNote(i, row, audio.currentTime, songOf(s), Math.max(0, Math.floor((Date.now() - s.t0) / songOf(s).stepMs / 16))); }
+function sfx(kind) {
+  if (!audio) return;
+  const t = audio.currentTime;
+  if (kind === "cheer") { voice("triangle", 880, t, 0.12, 0.08); voice("triangle", 1320, t + 0.07, 0.15, 0.07); }
+  else if (kind === "end") { for (const [k, m] of [[0, 60], [1, 64], [2, 67], [3, 72]]) voice("triangle", hz(m), t + k * 0.05, 1.4, 0.06); hiss(t, 1.2, 0.12, 5000); }
+}
+
+// ── DRAW ────────────────────────────────────────────────────────────────────────────
+const $ = (id) => document.getElementById(id);
+const cv = $("stage"), ctx = cv.getContext("2d");
+const touchUI = matchMedia("(pointer: coarse)").matches;
+let CW = 0, CH = 0, DPR = 1, lanes = [], buttons = [], finger = null;
+const pops = [], hearts = [], sparks = [];
+function fit() {
+  DPR = Math.min(2, devicePixelRatio || 1);
+  const b = cv.getBoundingClientRect(); CW = Math.max(1, b.width); CH = Math.max(1, b.height);
+  cv.width = Math.round(CW * DPR); cv.height = Math.round(CH * DPR);
+}
+addEventListener("resize", fit); addEventListener("orientationchange", fit);
+if (window.ResizeObserver) new ResizeObserver(fit).observe(cv);
+/** Where each instrument sits: yours big at the top (8 steps a row on narrow screens), the others below it. */
+function layout(mine) {
+  const out = [], gap = 8, portrait = CW < 640, others = [0, 1, 2, 3].filter((i) => i !== mine);
+  let y = 0, smallH = (CH - gap * 3) / 4;
+  if (mine >= 0) {
+    const gutter = portrait ? 0 : 54, gw = CW - gutter - 4, cols = gw / 16 >= 36 ? 16 : 8, halves = 16 / cols, labelH = 44, room = CH - 3 * ((portrait ? 54 : 62) + gap);
+    const cw = gw / cols, ch = Math.min(cw * 0.95, (room - labelH - 14 - (halves - 1) * 10) / (5 * halves)), bigH = labelH + 14 + 5 * halves * ch + (halves - 1) * 10;
+    out.push({ i: mine, big: true, x: 0, y, w: CW, h: bigH, labelH, gx: gutter, gy: y + labelH + 4, cols, halves, cw, ch, gw });
+    y += bigH + gap; smallH = Math.min(portrait ? 74 : 96, (CH - y - gap * 2) / 3);
+  }
+  const labelW = portrait ? 112 : 160, heartW = 50;
+  for (const i of others) {
+    out.push({ i, big: false, x: 0, y, w: CW, h: smallH, labelW, heartW, gx: labelW, gy: y + 5, cols: 16, halves: 1, cw: (CW - labelW - heartW) / 16, ch: (smallH - 10) / 5, gw: CW - labelW - heartW });
+    y += smallH + gap;
+  }
+  return out;
+}
+/** The cell rectangle for step `st`, row `r` in a lane. */
+function cellRect(L, st, r) {
+  const half = Math.floor(st / L.cols), col = st % L.cols;
+  return [L.gx + col * L.cw, L.gy + half * (5 * L.ch + 10) + r * L.ch, L.cw, L.ch];
+}
+function rr(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x, y, w, h, Math.max(0, Math.min(r, w / 2, h / 2))) : ctx.rect(x, y, w, h); }
+function button(x, y, w, h, fn) { buttons.push({ x, y, w, h, fn }); }
+
+function draw(s, b, now, dt) {
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0); ctx.clearRect(0, 0, CW, CH);
+  buttons = [];
+  if (!s || !b) return;
+  const sg = songOf(s), t = Date.now() - s.t0 - (audio ? (audio.outputLatency || 0) * 1000 : 0), playing = s.phase === "jam" && t >= 0 && b.r === s.id;
+  const k = playing ? Math.floor(t / sg.stepMs) : -1, step = k >= 0 ? k % 16 : -1, frac = playing ? (t % sg.stepMs) / sg.stepMs : 0;
+  const beatPulse = playing ? Math.pow(1 - ((t % (sg.stepMs * 4)) / (sg.stepMs * 4)), 3) : 0;
+  const mine = mySeat();
+  lanes = layout(mine);
+  if (step !== lastStep) { lastStep = step; if (step >= 0) onStep(b, step); }
+  // a glow that thumps with the kick drum
+  if (step >= 0 && (viewBits(b, 0, step) >> 4) & 1) {
+    const g = ctx.createRadialGradient(CW / 2, CH * 0.45, 0, CW / 2, CH * 0.45, Math.max(CW, CH) * 0.7);
+    g.addColorStop(0, `rgba(255,92,138,${0.16 * (1 - frac)})`); g.addColorStop(1, "rgba(255,92,138,0)"); ctx.fillStyle = g; ctx.fillRect(0, 0, CW, CH);
+  }
+  for (const L of lanes) drawLane(L, b, step, frac, beatPulse, now, mine);
+  // count-in
+  if (s.phase === "count") {
+    const left = s.t0 - Date.now(), beat = 60000 / sg.bpm, n = Math.ceil(left / beat);
+    if (n >= 1 && n <= CONFIG.countBeats) { ctx.font = `900 ${Math.round(Math.min(CW, CH) * 0.28)}px system-ui, sans-serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.globalAlpha = 0.25 + 0.75 * ((left % beat) / beat); ctx.fillStyle = "#ffd23f"; ctx.fillText(String(CONFIG.countBeats + 1 - n), CW / 2, CH / 2); ctx.globalAlpha = 1; }
+  }
+  // sparks from notes as they play, and hearts rising from cheered instruments
+  for (let i = sparks.length - 1; i >= 0; i--) {
+    const p = sparks[i]; p.life -= dt; if (p.life <= 0) { sparks.splice(i, 1); continue; }
+    p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 300 * dt;
+    ctx.globalAlpha = Math.min(1, p.life * 3); ctx.fillStyle = p.col; ctx.fillRect(p.x - 2, p.y - 2, 4, 4);
+  }
+  ctx.globalAlpha = 1;
+  for (let i = hearts.length - 1; i >= 0; i--) {
+    const h = hearts[i], age = (now - h.at) / 1000; if (age > 1.4) { hearts.splice(i, 1); continue; }
+    const L = lanes.find((x) => x.i === h.i); if (!L) continue;
+    const x = (L.big ? CW - 110 : CW - L.heartW / 2 - 3) + Math.sin(age * 6 + h.seed) * 10, y = L.y + (L.big ? 22 : L.h / 2) - age * 70;
+    ctx.globalAlpha = 1 - age / 1.4; drawHeart(x, y, 9 + age * 4, h.mine ? "#ffd23f" : "#ff5c8a"); ctx.globalAlpha = 1;
+  }
+  if (finger && now - finger.at < 500) { const L = lanes.find((x) => x.i === finger.i); if (L) { const [x, y, w, h] = cellRect(L, finger.st, finger.r); ctx.globalAlpha = 1 - (now - finger.at) / 500; ctx.strokeStyle = "#fff"; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(x + w / 2 + 6, y + h / 2 + 8, Math.min(w, 34) * 0.42, 0, Math.PI * 2); ctx.stroke(); ctx.fillStyle = "#ffffff44"; ctx.fill(); ctx.globalAlpha = 1; } }
+}
+let lastStep = -1;
+/** A new step started: notes on it throw sparks (only the instrument you play, and gently). */
+function onStep(b, step) {
+  for (const L of lanes) {
+    const bits = viewBits(b, L.i, step); if (!bits) continue;
+    for (let r = 0; r < 5; r++) if ((bits >> r) & 1 && (L.big || Math.random() < 0.7)) {
+      const [x, y, w, h] = cellRect(L, step, r);
+      for (let n = 0; n < (L.big ? 4 : 2); n++) sparks.push({ x: x + w / 2, y: y + h / 2, vx: (Math.random() - 0.5) * 160, vy: -60 - Math.random() * 140, life: 0.45, col: INSTRUMENTS[L.i].color });
+    }
+  }
+}
+function drawLane(L, b, step, frac, pulse, now, mine) {
+  const inst = INSTRUMENTS[L.i], col = inst.color, ids = b.s[L.i] || [], bot = !ids.length;
+  // panel
+  ctx.fillStyle = L.big ? "#1a1436" : "#151030"; rr(L.x, L.y, L.w, L.h, 14); ctx.fill();
+  if (L.big) { ctx.strokeStyle = col; ctx.globalAlpha = 0.55 + pulse * 0.45; ctx.lineWidth = 2; ctx.stroke(); ctx.globalAlpha = 1; }
+  // label: instrument, who plays it, and buttons
+  const who = bot ? `${inst.bot} (bot)` : ids.map((id) => (id === net.sessionId ? "You" : nameOf(id))).join(" + ");
+  ctx.textBaseline = "middle"; ctx.textAlign = "left";
+  if (L.big) {
+    ctx.font = "900 17px system-ui, sans-serif"; ctx.fillStyle = col; ctx.fillText(inst.name, 14, L.y + 22);
+    const nameW = ctx.measureText(inst.name).width;
+    ctx.font = "700 13px system-ui, sans-serif"; ctx.fillStyle = "#a59fc9"; ctx.fillText(ATTRACT ? "" : `you${ids.length > 1 ? " + " + nameOf(ids.find((x) => x !== net.sessionId)) : ""}`, 24 + nameW, L.y + 23);
+    if (!ATTRACT) {
+      const bw = 70, bx = CW - bw - 8, by = L.y + 4;
+      ctx.fillStyle = "#ffffff14"; rr(bx, by, bw, 36, 10); ctx.fill(); ctx.fillStyle = "#f4f0ff"; ctx.font = "800 13px system-ui, sans-serif"; ctx.textAlign = "center"; ctx.fillText("Clear", bx + bw / 2, by + 18); ctx.textAlign = "left";
+      button(bx, by - 4, bw, 44, clearMine);
+      const hc = (b.h[net.sessionId] || 0); if (hc) { ctx.font = "800 14px system-ui, sans-serif"; ctx.fillStyle = "#ff5c8a"; ctx.textAlign = "right"; ctx.fillText(`♥ ${hc}`, bx - 12, L.y + 23); ctx.textAlign = "left"; }
+    }
+  } else {
+    const lw = L.labelW, cy = L.y + L.h / 2;
+    ctx.fillStyle = col; rr(L.x + 6, L.y + 8, 4, L.h - 16, 2); ctx.fill();
+    ctx.font = `900 ${L.h < 60 ? 13 : 15}px system-ui, sans-serif`; ctx.fillStyle = col; ctx.fillText(inst.name, 16, cy - 9);
+    ctx.font = `700 ${L.h < 60 ? 11 : 12}px system-ui, sans-serif`; ctx.fillStyle = bot ? "#a59fc9" : "#f4f0ff";
+    ctx.fillText(fitText(who, lw - 22), 16, cy + 8);
+    const canTake = !ATTRACT && !ids.includes(net.sessionId) && ids.length < CONFIG.perSeat;
+    if (canTake) { ctx.font = "800 10px system-ui, sans-serif"; ctx.fillStyle = "#ffd23f"; ctx.fillText(bot ? "TAP TO PLAY" : "TAP TO JOIN", 16, Math.min(cy + 23, L.y + L.h - 7)); button(L.x, L.y, lw, L.h, () => takeSeat(L.i)); }
+    const hc = ids.reduce((n, id) => n + (b.h[id] || 0), 0) + (bot ? b.h["bot" + L.i] || 0 : 0), hx = CW - L.heartW / 2 - 3;
+    if (!ATTRACT) { ctx.fillStyle = "#ffffff0f"; rr(hx - 21, cy - 21, 42, 42, 10); ctx.fill(); button(CW - L.heartW - 2, L.y, L.heartW + 2, L.h, () => cheer(L.i)); }
+    drawHeart(hx, cy - (hc ? 5 : 0), 8, "#ff5c8a");
+    if (hc) { ctx.font = "800 10px system-ui, sans-serif"; ctx.textAlign = "center"; ctx.fillStyle = "#f4f0ff"; ctx.fillText(String(hc), hx, cy + 12); ctx.textAlign = "left"; }
+  }
+  // the grid
+  for (let st = 0; st < 16; st++) {
+    const bits = viewBits(b, L.i, st), here = st === step;
+    for (let r = 0; r < 5; r++) {
+      const [x, y, w, h] = cellRect(L, st, r), on = (bits >> r) & 1, inset = L.big ? 3 : 1.5;
+      if (on) {
+        const hit = here ? 1 - frac : 0, grow = hit * (L.big ? 3 : 1.5);
+        ctx.fillStyle = col; ctx.shadowColor = col; ctx.shadowBlur = here ? 18 : 0;
+        rr(x + inset - grow, y + inset - grow, w - inset * 2 + grow * 2, h - inset * 2 + grow * 2, L.big ? 8 : 3); ctx.fill(); ctx.shadowBlur = 0;
+        if (here) { ctx.fillStyle = `rgba(255,255,255,${0.55 * hit})`; ctx.fill(); }
+      } else {
+        ctx.fillStyle = here ? "#ffffff2a" : Math.floor(st / 4) % 2 ? "#ffffff0b" : "#ffffff14";
+        rr(x + inset, y + inset, w - inset * 2, h - inset * 2, L.big ? 8 : 3); ctx.fill();
+      }
+      if (L.big && st === 0 && L.gx > 0 && Math.floor(st / L.cols) === 0) { ctx.font = "700 11px system-ui, sans-serif"; ctx.fillStyle = "#a59fc9"; ctx.textAlign = "right"; ctx.fillText(inst.rows[r] || rowName(L.i, r), L.gx - 8, y + h / 2); ctx.textAlign = "left"; }
+    }
+  }
+  // the playhead: a bright band sweeping across the steps
+  if (step >= 0) {
+    const [x, y, w] = cellRect(L, step, 0), h = 5 * L.ch, px = x + frac * w;
+    ctx.fillStyle = "rgba(255,255,255,0.07)"; ctx.fillRect(x, y, w, h);
+    const g = ctx.createLinearGradient(px - 14, 0, px, 0); g.addColorStop(0, "rgba(255,255,255,0)"); g.addColorStop(1, "rgba(255,255,255,0.35)");
+    ctx.fillStyle = g; ctx.fillRect(px - 14, y, 14, h); ctx.fillStyle = "#ffffffcc"; ctx.fillRect(px - 1, y, 2, h);
+  }
+  // the pops of notes other people (and bots) just changed
+  for (const p of pops) {
+    if (p.i !== L.i) continue;
+    const age = (now - p.at) / 1000; if (age > 0.6) continue;
+    const [x, y, w, h] = cellRect(L, p.st, p.r);
+    ctx.strokeStyle = p.on ? "#ffffff" : col; ctx.globalAlpha = 1 - age / 0.6; ctx.lineWidth = 2;
+    rr(x - age * 10, y - age * 10, w + age * 20, h + age * 20, 8); ctx.stroke(); ctx.globalAlpha = 1;
+  }
+}
+const rowName = (i, r) => (i === 3 ? ["High", "", "", "", "Low"][r] : "");
+function fitText(text, w) { if (ctx.measureText(text).width <= w) return text; while (text.length > 2 && ctx.measureText(text + "…").width > w) text = text.slice(0, -1); return text + "…"; }
+function drawHeart(x, y, s, col) {
+  ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(x, y + s * 0.9);
+  ctx.bezierCurveTo(x - s * 1.4, y - s * 0.1, x - s * 0.6, y - s * 1.1, x, y - s * 0.35);
+  ctx.bezierCurveTo(x + s * 0.6, y - s * 1.1, x + s * 1.4, y - s * 0.1, x, y + s * 0.9); ctx.fill();
+}
+function floatHeart(i, mine) { hearts.push({ i, at: performance.now(), seed: Math.random() * 6, mine }); }
+/** Compare the band with the last one seen: changed notes pop, new cheers float up hearts. */
+const seenBand = { r: -1, p: [], h: {} };
+function diffBand(b) {
+  if (!b) return;
+  if (seenBand.r !== b.r) { seenBand.r = b.r; seenBand.p = b.p.map(cleanPat); seenBand.h = { ...b.h }; return; }
+  const now = performance.now();
+  b.p.forEach((raw, i) => {
+    const p = cleanPat(raw), old = seenBand.p[i];
+    if (p !== old) for (let st = 0; st < 16; st++) { const x = bitsOf(p, st), y = bitsOf(old, st); if (x !== y) for (let r = 0; r < 5; r++) if (((x ^ y) >> r) & 1 && !pending.has(i + ":" + st)) pops.push({ i, st, r, on: (x >> r) & 1, at: now }); }
+    seenBand.p[i] = p;
+  });
+  for (const [id, n] of Object.entries(b.h || {})) {
+    const before = seenBand.h[id] || 0;
+    if (n > before) { const i = id.startsWith("bot") ? +id.slice(3) : seatOf(b, id); if (i >= 0) for (let k = 0; k < Math.min(3, n - before); k++) floatHeart(i, false); if (id === net.sessionId) sfx("cheer"); }
+  }
+  seenBand.h = { ...b.h };
+  while (pops.length > 60) pops.shift();
+}
+
+// ── HUD & RESULTS ───────────────────────────────────────────────────────────────────
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const clock = (ms) => { const s = Math.max(0, Math.ceil(ms / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
+let board = null, boardFor = -1, hintFlash = null;
+function flashHint(text) { hintFlash = { text, at: performance.now() }; }
+function hud(s, b) {
+  const t = Date.now(), sg = songOf(s), mine = b ? seatOf(b, net.sessionId) : -1;
+  $("song").textContent = `♪ ${sg.name} · ${sg.bpm} BPM` + (CW > 560 ? ` · ${sg.keyName}` : "");
+  $("left").textContent = s.phase === "jam" ? clock(s.endsAt - t) : s.phase === "count" ? clock(s.endsAt - s.t0) : "0:00";
+  if (mine !== me.seat) { me.seat = mine; me.seatAt = performance.now(); }
+  let hint = "";
+  if (!ATTRACT) {
+    const since = performance.now() - me.seatAt;
+    if (hintFlash && performance.now() - hintFlash.at < 1800) hint = hintFlash.text;
+    else if (!audio) hint = touchUI ? "Tap anywhere to turn the sound on" : "Click anywhere to turn the sound on";
+    else if (mine >= 0 && since < 12000) hint = `You're on ${INSTRUMENTS[mine].name}: tap squares to add notes. Tap another instrument to switch.`;
+    else if (mine < 0 && b) hint = "Every instrument is taken: cheer the band with ♥";
+  }
+  $("hint").textContent = hint;
+  if (ATTRACT) { $("net").textContent = ""; $("over").hidden = true; return; }
+  const n = livePlayers().length;
+  $("net").textContent = netDown ? "Reconnecting…" : net.offline ? "Offline: playing with bots" : `Online · ${n} player${n === 1 ? "" : "s"}${isHost() ? " · you run the band" : ""}`;
+  $("over").hidden = s.phase !== "done";
+  if (s.phase === "done") {
+    if (boardFor !== s.id) { boardFor = s.id; showResults(s, b); }
+    $("again").textContent = me.ready === s.id ? "Waiting for the others…" : "Next song";
+    $("next").textContent = `Next song in ${Math.max(0, Math.ceil((s.endsAt - t) / 1000))}s`;
+  }
+}
+function showResults(s, b) {
+  const sg = songOf(s), res = s.res || [], top = res[0];
+  $("title").textContent = `“${sg.name}”`;
+  $("sub").textContent = top && top[5] ? `Crowd favorite: ${top[0] === net.sessionId ? "you" : top[1]}, ${top[5]} ♥` : `${sg.bpm} BPM · ${sg.keyName}`;
+  $("results").innerHTML = res.map(([id, name, color, i, notes, h]) => `<li class="${id === net.sessionId ? "me" : ""}"><b style="color:${esc(color)}">●</b> ${esc(id === net.sessionId ? "You" : name)}<span>♥ ${h}</span><small>${INSTRUMENTS[i] ? INSTRUMENTS[i].name : ""} · ${notes} note${notes === 1 ? "" : "s"} added</small></li>`).join("");
+  const list = $("board");
+  if (!board) { list.innerHTML = "<li>Leaderboards need a connection.</li>"; return; }
+  list.innerHTML = "<li>Loading…</li>";
+  const row = res.find((x) => x[0] === net.sessionId), score = row && me.submitted !== s.id ? row[5] : 0;
+  me.submitted = s.id;
+  (score ? board.submit(score).catch(() => null) : Promise.resolve()).then(() => board.top(10)).then(({ entries }) => {
+    list.innerHTML = entries.length ? entries.map((e) => `<li>${esc(e.username || "Player")}<span>♥ ${Number(e.score)}</span></li>`).join("") : "<li>No cheers yet. Be the first.</li>";
+  }).catch(() => { list.innerHTML = "<li>Couldn't load the leaderboard.</li>"; });
+}
+function playAgain() { const s = song(); if (s && s.phase === "done") { me.ready = s.id; net.me.set("rdy", s.id); $("again").textContent = "Waiting for the others…"; } }
+$("again").onclick = playAgain;
+
+// ── INPUT ───────────────────────────────────────────────────────────────────────────
+/** A tap on the stage: a button (switch, cheer, clear), or a square on your instrument. */
+cv.addEventListener("pointerdown", (e) => {
+  e.preventDefault(); unlockAudio();
+  const r = cv.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+  for (const btn of buttons) if (x >= btn.x && x <= btn.x + btn.w && y >= btn.y && y <= btn.y + btn.h) { btn.fn(); return; }
+  const L = lanes.find((l) => l.big);
+  if (!L) return;
+  for (let st = 0; st < 16; st++) for (let row = 0; row < 5; row++) {
+    const [cx, cy, w, h] = cellRect(L, st, row);
+    if (x >= cx && x < cx + w && y >= cy && y < cy + h) { toggle(st, row); paint = { on: (viewBits(band(), L.i, st) >> row) & 1, done: new Set([st + ":" + row]) }; try { cv.setPointerCapture(e.pointerId); } catch {} return; }
+  }
+});
+// Drag across squares to paint (or erase) a run of notes, like the first one you touched.
+let paint = null;
+cv.addEventListener("pointermove", (e) => {
+  if (!paint || !(e.buttons & 1) && e.pointerType === "mouse") return;
+  const L = lanes.find((l) => l.big), b = band(); if (!L || !b) return;
+  const r = cv.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+  for (let st = 0; st < 16; st++) for (let row = 0; row < 5; row++) {
+    const [cx, cy, w, h] = cellRect(L, st, row);
+    if (x >= cx && x < cx + w && y >= cy && y < cy + h && !paint.done.has(st + ":" + row)) { paint.done.add(st + ":" + row); if (((viewBits(b, L.i, st) >> row) & 1) !== paint.on) toggle(st, row); }
+  }
+});
+for (const ev of ["pointerup", "pointercancel"]) cv.addEventListener(ev, () => (paint = null));
+addEventListener("keydown", (e) => { unlockAudio(); if ((e.key === "Enter" || e.key === " ") && song()?.phase === "done") { e.preventDefault(); playAgain(); } });
+document.addEventListener("pointerdown", unlockAudio);
+document.addEventListener("touchmove", (e) => { if (e.target === cv) e.preventDefault(); }, { passive: false });
+
+// ── MAIN LOOP ───────────────────────────────────────────────────────────────────────
+let last = performance.now(), lastHb = 0, lastHud = 0, lastPhase = "";
+function frame(now) {
+  const dt = Math.max(0, Math.min(0.05, (now - last) / 1000)); last = now; // the first frame can be stamped before `last`
+  if (now - lastHb > 1000) { lastHb = now; net.me.set("hb", Date.now()); fixColor(); }
+  if (isHost()) hostTick(now); else host.wasHost = false;
+  const s = song(), b = band();
+  if (s) {
+    if (me.songId !== s.id) { me.songId = s.id; pending.clear(); pops.length = 0; $("over").hidden = true; }
+    if (lastPhase !== s.phase) { if (s.phase === "done" && lastPhase === "jam") sfx("end"); lastPhase = s.phase; }
+    diffBand(b);
+    if (s.phase === "jam") autopilot(now);
+    scheduleMusic(s, b);
+    draw(s, b, now, dt);
+    if (now - lastHud > 100) { lastHud = now; hud(s, b); }
+  } else { ctx.setTransform(DPR, 0, 0, DPR, 0, 0); ctx.clearRect(0, 0, CW, CH); }
+  requestAnimationFrame(frame);
+}
+/** Two players picked the same color at once (the joiner's first state can be empty): the later sessionId picks again. */
+function fixColor() {
+  const others = Object.entries(S.entities.players || {}).filter(([id]) => id !== net.sessionId), bots = INSTRUMENTS.map((x) => x.color);
+  if (!others.some(([id, p]) => p.c === myColor && id < net.sessionId) && !bots.includes(myColor)) return;
+  const taken = new Set([...others.map(([, p]) => p.c), ...bots]), free = COLORS.find((c) => !taken.has(c));
+  if (free) { myColor = free; net.me.set("c", free); }
+}
+
+(async function start() {
+  fit();
+  net = await connect();
+  net.onState((st) => { S = st; });
+  net.on("toggle", (m, from) => { if (isHost()) applyToggle(from, m); });
+  net.on("seat", (m, from) => { if (isHost()) applySeat(from, m); });
+  net.on("cheer", (m, from) => { if (isHost()) applyCheer(from, m); });
+  net.onDisconnect(() => { netDown = true; $("net").textContent = "Reconnecting…"; });
+  net.onReconnect(() => { netDown = false; });
+  if (!net.offline && typeof MP !== "undefined") board = MP.auth({ key: MP_CONNECT.key, apiUrl: MP_CONNECT.apiUrl }).leaderboard(CONFIG.board);
+  const taken = new Set(Object.entries(S.entities.players || {}).filter(([id]) => id !== net.sessionId).map(([, p]) => p.c));
+  myColor = COLORS.find((c) => !taken.has(c)) || COLORS[Math.floor(Math.random() * COLORS.length)];
+  net.me.set({ n: myName, c: myColor, hb: Date.now() });
+  if (ATTRACT) Object.assign(CONFIG, { countBeats: 1, botEveryMs: [500, 1100], resultsMs: 1500 });
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
