@@ -28,6 +28,7 @@
   .card li { padding: 2px 0; } .card li span { float: right; font-variant-numeric: tabular-nums; font-weight: 800; }
   .card li small { display: block; color: var(--dim); font-size: 12px; }
   .card li.me { color: var(--gold); }
+  .card li.note { list-style: none; opacity: .75; }
   .card p { margin: 10px 0 0; font-size: 13px; opacity: .8; }
   button.go { width: 100%; min-height: 48px; margin-top: 14px; border: 0; border-radius: 12px; background: var(--pink); color: #fff; font: 800 17px system-ui, sans-serif; cursor: pointer; }
   @media (max-width: 560px) { header h1 { font-size: 18px; } #song { font-size: 12px; } #left { font-size: 14px; } }
@@ -43,7 +44,7 @@
 </div>
 <div id="over" hidden><div class="card">
   <h2 id="title"></h2><div class="sub" id="sub"></div><ol id="results"></ol>
-  <h3>Most cheered</h3><ol id="board"><li>Loading…</li></ol>
+  <h3>Most cheered</h3><ol id="board"><li class="note">Loading…</li></ol>
   <button class="go" id="again">Next song</button><p id="next"></p>
 </div></div>
 <script>
@@ -76,7 +77,7 @@
  *     worked out every frame. It seats new players, runs the clock, plays the bots on empty
  *     instruments, and applies the intents. A new host adopts song and band from state.
  *   - Everyone else sends intents: "toggle" {i, s, r, on} (a note on your instrument),
- *     "seat" {i} (play another instrument) and "cheer" {i}. Your note shows at once until
+ *     "clear" {i} (wipe your instrument), "seat" {i} (play another instrument) and "cheer" {i}. Your note shows at once until
  *     the band comes back.
  *   - Each player writes its OWN entity: `hb` (heartbeat) once a second, `rdy` (Next song)
  *     and `n`/`c` (name, color).
@@ -265,6 +266,12 @@ function setNote(i, step, row, on, who) {
   if (on) b.n[who] = (b.n[who] || 0) + 1;
   host.dirty = true;
 }
+/** A "clear" intent: wipe instrument i (one message, however many notes it had). */
+function applyClear(from, m) {
+  const b = host.band, i = m && m.i;
+  if (!b || !Number.isInteger(i) || i < 0 || i > 3 || !b.s[i].includes(from) || b.p[i] === EMPTY) return;
+  b.p[i] = EMPTY; host.dirty = true;
+}
 /** A "seat" intent: move to instrument i if it has room. */
 function applySeat(from, m) {
   const b = host.band, i = m && m.i;
@@ -375,9 +382,10 @@ function toggle(step, row) {
   if (isHost()) applyToggle(net.sessionId, msg); else net.send("toggle", msg);
 }
 function clearMine() {
-  const b = band(), i = mySeat();
-  if (!b || i < 0) return;
-  for (let st = 0; st < 16; st++) for (let r = 0; r < 5; r++) if ((viewBits(b, i, st) >> r) & 1) toggle(st, r);
+  const b = band(), i = mySeat(), s = song();
+  if (!b || i < 0 || !s || s.phase === "done" || b.r !== s.id) return;
+  for (let st = 0; st < 16; st++) pending.set(i + ":" + st, { bits: 0, until: performance.now() + 2500 });
+  if (isHost()) applyClear(net.sessionId, { i }); else net.send("clear", { i });
 }
 function takeSeat(i) {
   const b = band();
@@ -406,6 +414,7 @@ function autopilot(now) {
 let audio = null, master = null, echo = null, noise = null;
 const music = { key: "", base: 0, next: 0 }; // base: the AudioContext time of loop time 0
 function unlockAudio() {
+  if (audio && audio.state === "suspended") audio.resume().catch(() => {});
   if (audio || ATTRACT) return;
   try {
     audio = new AudioContext();
@@ -682,13 +691,13 @@ function showResults(s, b) {
   $("sub").textContent = top && top[5] ? `Crowd favorite: ${top[0] === net.sessionId ? "you" : top[1]}, ${top[5]} ♥` : `${sg.bpm} BPM · ${sg.keyName}`;
   $("results").innerHTML = res.map(([id, name, color, i, notes, h]) => `<li class="${id === net.sessionId ? "me" : ""}"><b style="color:${esc(color)}">●</b> ${esc(id === net.sessionId ? "You" : name)}<span>♥ ${h}</span><small>${INSTRUMENTS[i] ? INSTRUMENTS[i].name : ""} · ${notes} note${notes === 1 ? "" : "s"} added</small></li>`).join("");
   const list = $("board");
-  if (!board) { list.innerHTML = "<li>Leaderboards need a connection.</li>"; return; }
-  list.innerHTML = "<li>Loading…</li>";
+  if (!board) { list.innerHTML = "<li class=\"note\">Leaderboards need a connection.</li>"; return; }
+  list.innerHTML = "<li class=\"note\">Loading…</li>";
   const row = res.find((x) => x[0] === net.sessionId), score = row && me.submitted !== s.id ? row[5] : 0;
   me.submitted = s.id;
   (score ? board.submit(score).catch(() => null) : Promise.resolve()).then(() => board.top(10)).then(({ entries }) => {
-    list.innerHTML = entries.length ? entries.map((e) => `<li>${esc(e.username || "Player")}<span>♥ ${Number(e.score)}</span></li>`).join("") : "<li>No cheers yet. Be the first.</li>";
-  }).catch(() => { list.innerHTML = "<li>Couldn't load the leaderboard.</li>"; });
+    list.innerHTML = entries.length ? entries.map((e) => `<li>${esc(e.username || "Player")}<span>♥ ${Number(e.score)}</span></li>`).join("") : "<li class=\"note\">No cheers yet. Be the first.</li>";
+  }).catch(() => { list.innerHTML = "<li class=\"note\">Couldn't load the leaderboard.</li>"; });
 }
 function playAgain() { const s = song(); if (s && s.phase === "done") { me.ready = s.id; net.me.set("rdy", s.id); $("again").textContent = "Waiting for the others…"; } }
 $("again").onclick = playAgain;
@@ -721,6 +730,7 @@ for (const ev of ["pointerup", "pointercancel"]) cv.addEventListener(ev, () => (
 addEventListener("keydown", (e) => { unlockAudio(); if ((e.key === "Enter" || e.key === " ") && song()?.phase === "done") { e.preventDefault(); playAgain(); } });
 document.addEventListener("pointerdown", unlockAudio);
 document.addEventListener("touchmove", (e) => { if (e.target === cv) e.preventDefault(); }, { passive: false });
+cv.addEventListener("contextmenu", (e) => e.preventDefault()); // a right-click on the grid doesn't open the browser menu
 
 // ── MAIN LOOP ───────────────────────────────────────────────────────────────────────
 let last = performance.now(), lastHb = 0, lastHud = 0, lastPhase = "";
@@ -755,6 +765,7 @@ function fixColor() {
   net = await connect();
   net.onState((st) => { S = st; });
   net.on("toggle", (m, from) => { if (isHost()) applyToggle(from, m); });
+  net.on("clear", (m, from) => { if (isHost()) applyClear(from, m); });
   net.on("seat", (m, from) => { if (isHost()) applySeat(from, m); });
   net.on("cheer", (m, from) => { if (isHost()) applyCheer(from, m); });
   net.onDisconnect(() => { netDown = true; $("net").textContent = "Reconnecting…"; });
